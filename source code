@@ -1,0 +1,295 @@
+#define PROCESSING_VISUALIZER 1
+#define SERIAL_PLOTTER  2
+#include <LiquidCrystal.h>
+#include <SoftwareSerial.h>
+int la,lo,latt,lonn, gps_chk='0',hbt;
+float lath,latl,lonh,lonl,lat,lon;
+unsigned char sdata=0,rx[50],r;
+SoftwareSerial mySerial(9, 10); // RX, TX
+
+String url1 = "";
+int urllen;
+int gps_times = 0,panic=12,fal=A3,alc=A1,so=A2;
+String rxdata;
+
+LiquidCrystal lcd(A7, 10, 10, 9, 8, 7);
+//  Variables
+int pulsePin = 0;                 // Pulse Sensor purple wire connected to analog pin 0
+int blinkPin = 13;                // pin to blink led at each beat
+int fadePin = 5;                  // pin to do fancy classy fading blink at each beat
+int fadeRate = 0;                 // used to fade LED on with PWM on fadePin
+int buz=7;
+int t=A3,x=A1,Temp,ang,f=A6,fir,mod=12;
+float temp;
+// Volatile Variables, used in the interrupt service routine!
+volatile int BPM;                   // int that holds raw Analog in 0. updated every 2mS
+volatile int Signal;                // holds the incoming raw data
+volatile int IBI = 600;             // int that holds the time interval between beats! Must be seeded!
+volatile boolean Pulse = false;     // "True" when User's live heartbeat is detected. "False" when not a "live beat".
+volatile boolean QS = false;        // becomes true when Arduoino finds a beat.
+
+// SET THE SERIAL OUTPUT TYPE TO YOUR NEEDS
+// PROCESSING_VISUALIZER works with Pulse Sensor Processing Visualizer
+//      https://github.com/WorldFamousElectronics/PulseSensor_Amped_Processing_Visualizer
+// SERIAL_PLOTTER outputs sensor data for viewing with the Arduino Serial Plotter
+//      run the Serial Plotter at 115200 baud: Tools/Serial Plotter or Command+L
+static int outputType = SERIAL_PLOTTER;
+
+
+void setup()
+{
+  pinMode(blinkPin,OUTPUT);         // pin that will blink to your heartbeat!
+  pinMode(fadePin,OUTPUT);          // pin that will fade to your heartbeat!
+  pinMode(f,INPUT);
+  pinMode(panic,INPUT);pinMode(alc,INPUT);pinMode(so,INPUT);pinMode(fal,INPUT);
+  
+  pinMode(buz,OUTPUT);
+  Serial.begin(9600);             // we agree to talk fast!
+  mySerial.begin(9600);
+  interruptSetup();                 // sets up to read Pulse Sensor signal every 2mS
+   // IF YOU ARE POWERING The Pulse Sensor AT VOLTAGE LESS THAN THE BOARD VOLTAGE,
+   // UN-COMMENT THE NEXT LINE AND APPLY THAT VOLTAGE TO THE A-REF PIN
+//   analogReference(EXTERNAL);
+  lcd.begin(16, 2);
+  lcd.setCursor(0, 0);
+  lcd.print(" HEART BEAT AND ");
+  lcd.setCursor(0, 1);
+  lcd.print("TEMP MONITORING ");
+  delay(2000);
+  lcd.setCursor(0, 0);
+  lcd.print("HB:    TEMP:    ");
+  lcd.setCursor(0, 1);
+  lcd.print("                ");digitalWrite(buz,LOW);
+}
+
+
+//  Where the Magic Happens
+void loop()
+{
+    
+    /*if(Temp>60)
+    {
+      digitalWrite(buz,HIGH);
+      gps_sms(2);
+      digitalWrite(buz,LOW);
+    }*/
+    /*else
+    {
+      mySerial.print("A0*");
+      lcd.setCursor(5, 1);
+      lcd.print("N");
+    }*/
+    delay(1000);
+    if(digitalRead(panic)==0)
+    {
+      Serial.print("Panic button pressed...");
+      digitalWrite(buz,HIGH);
+      delay(1500);
+      gps_sms(1);
+      digitalWrite(buz,LOW);
+    }
+    if(digitalRead(alc)==0)
+    {
+      Serial.print("Alcohol detected...");
+      //pinMode(13,OUTPUT);
+      digitalWrite(buz,HIGH);
+      delay(1500);
+      gps_sms(2);
+      digitalWrite(buz,LOW);
+    }
+    if(digitalRead(fal)==1)
+    {
+      Serial.print("Fall detected take alert...");
+      //pinMode(13,OUTPUT);
+      digitalWrite(buz,HIGH);
+      delay(1500);
+      gps_sms(4);
+      digitalWrite(buz,LOW);
+    }    
+    if(digitalRead(so)==1)
+    {
+      Serial.print("Sound detected take alert...");
+      //pinMode(13,OUTPUT);
+      digitalWrite(buz,HIGH);
+      delay(1500);
+      gps_sms(5);
+      digitalWrite(buz,LOW);
+    }
+    delay(100);
+    serialOutput() ;
+
+  if (QS == true)
+  {     // A Heartbeat Was Found
+                       // BPM and IBI have been Determined
+                       // Quantified Self "QS" true when arduino finds a heartbeat
+        fadeRate = 255;         // Makes the LED Fade Effect Happen
+                                // Set 'fadeRate' Variable to 255 to fade LED with pulse
+        serialOutputWhenBeatHappens();   // A Beat Happened, Output that to serial.
+        QS = false;                      // reset the Quantified Self flag for next time
+  }
+
+  ledFadeToBeat();                      // Makes the LED Fade Effect Happen
+  delay(20);                             //  take a break
+}
+void ledFadeToBeat(){
+    fadeRate -= 15;                         //  set LED fade value
+    fadeRate = constrain(fadeRate,0,255);   //  keep LED fade value from going into negative numbers!
+    analogWrite(fadePin,fadeRate);          //  fade LED
+  }
+unsigned char rxd (void)
+{                    
+  while (Serial.available()==0);
+  return(Serial.read());
+  //return (sdata);
+}
+
+void gps_sms(int kl)
+{
+    gps_chk='0';
+    while(gps_chk=='0')
+    {
+    if(rxd()=='$')
+    {
+      if(rxd()=='G')
+      {
+        if(rxd()=='P')
+        {
+          if(rxd()=='G')
+          {
+            if(rxd()=='G')
+            {
+              if(rxd()=='A')
+              {
+                gps_chk='1';
+                for(r=0;r<36;r++)
+                {
+                  rx[r] = rxd();
+                }
+                for(r=11;r<36;r++)
+                {
+                  Serial.write(rx[r]);//rx[r] = rxd();
+                }
+                Serial.println();
+                la=(rx[11+1]&0x0f)*10+(rx[12+1]&0x0f);
+                lath=(rx[13+1]&0x0f)*10+(rx[14+1]&0x0f);
+                //lath=(rx[13]&0x0f)*10+(rx[14]&0x0f);
+                latl=(rx[16+1]&0x0f)*1000+(rx[17+1]&0x0f)*100+(rx[19]&0x0f)*10+(rx[20]&0x0f);
+                lo=(rx[25]&0x0f)*10+(rx[26]&0x0f);
+                lonh=(rx[27]&0x0f)*10+(rx[28]&0x0f);
+                lonl=(rx[30]&0x0f)*1000+(rx[31]&0x0f)*100+(rx[32]&0x0f)*10+(rx[33]&0x0f);
+                //-----------------lat------------------------
+                lath=lath/60;
+                latl=(latl/60)/10000;
+                lat=lath+latl;
+                latt=lat*10000;
+                //------------------lon------------------------
+                lonh=lonh/60;
+                lonl=(lonl/60)/10000;
+                lon=lonh+lonl;
+                lonn=lon*10000;
+                if(kl==1)
+                {
+                  //=======================================SMS 1===================================//
+                  mySerial.println("AT+CMGF=1");    //Sets the GSM Module in Text Mode
+                  delay(2000);  // Delay of 1000 milli seconds or 1 second
+                  mySerial.print("AT+CMGS=\"7981922258\"\r\n");// Replace x with mobile number
+                  delay(2000);
+                  mySerial.println("I AM IN DANGER PLZ HELP ME");
+                  mySerial.print("http://maps.google.com/maps?q=");
+                  mySerial.print(la);mySerial.print('.');mySerial.print(latt);mySerial.print(",");//Serial.println(latl);
+                  mySerial.print(lo);mySerial.print('.');mySerial.println(lonn);//16.496390, 80.654752
+                  Serial.print("http://maps.google.com/maps?q=");
+                  Serial.print(la);Serial.print('.');Serial.print(latt);Serial.print(",");//Serial.println(latl);
+                  Serial.print(lo);Serial.print('.');Serial.println(lonn);//16.496390, 80.654752
+                  delay(2000);
+                  mySerial.println((char)26);// ASCII code of CTRL+Z
+                  delay(2000);digitalWrite(13,LOW);
+                }
+                else if(kl==2)
+                {
+                //=======================================SMS 2===================================//
+                mySerial.println("AT+CMGF=1");    //Sets the GSM Module in Text Mode
+                delay(2000);  // Delay of 1000 milli seconds or 1 second
+                //Serial.print("AT+CMGS=\"9502772667\"\r\n");// Replace x with mobile number
+                mySerial.print("AT+CMGS=\"7981922258\"\r\n");// Replace x with mobile number
+                delay(2000);
+                mySerial.println("ALCOHOL detected PLZ TAKE ALERT....!");
+                mySerial.print("http://maps.google.com/maps?q=");
+                mySerial.print(la);mySerial.print('.');mySerial.print(latt);mySerial.print(",");//Serial.println(latl);
+                mySerial.print(lo);mySerial.print('.');mySerial.println(lonn);//16.496390, 80.654752
+                Serial.print("http://maps.google.com/maps?q=");
+                Serial.print(la);Serial.print('.');Serial.print(latt);Serial.print(",");//Serial.println(latl);
+                  Serial.print(lo);Serial.print('.');Serial.println(lonn);//16.496390, 80.654752
+                delay(2000);
+                mySerial.println((char)26);// ASCII code of CTRL+Z
+                delay(1000);
+                digitalWrite(13,LOW);
+                }
+                else if(kl==3)
+                {
+                //=======================================SMS 2===================================//
+                mySerial.println("AT+CMGF=1");    //Sets the GSM Module in Text Mode
+                delay(2000);  // Delay of 1000 milli seconds or 1 second
+                //Serial.print("AT+CMGS=\"9502772667\"\r\n");// Replace x with mobile number
+                mySerial.print("AT+CMGS=\"7981922258\"\r\n");// Replace x with mobile number
+                delay(2000);
+                mySerial.println("HEART RATE EXCEDDED PLZ TAKE ALERT....!");
+                mySerial.print("http://maps.google.com/maps?q=");
+                mySerial.print(la);mySerial.print('.');mySerial.print(latt);mySerial.print(",");//Serial.println(latl);
+                mySerial.print(lo);mySerial.print('.');mySerial.println(lonn);//16.496390, 80.654752
+                Serial.print("http://maps.google.com/maps?q=");
+                Serial.print(la);Serial.print('.');Serial.print(latt);Serial.print(",");//Serial.println(latl);
+                  Serial.print(lo);Serial.print('.');Serial.println(lonn);//16.496390, 80.654752
+                delay(2000);
+                mySerial.println((char)26);// ASCII code of CTRL+Z
+                delay(1000);
+                digitalWrite(13,LOW);
+                }
+                else if(kl==4)
+                {
+                //=======================================SMS 2===================================//
+                mySerial.println("AT+CMGF=1");    //Sets the GSM Module in Text Mode
+                delay(2000);  // Delay of 1000 milli seconds or 1 second
+                //Serial.print("AT+CMGS=\"9502772667\"\r\n");// Replace x with mobile number
+                mySerial.print("AT+CMGS=\"7981922258\"\r\n");// Replace x with mobile number
+                delay(2000);
+                mySerial.println("Fall detected PLZ TAKE ALERT....!");
+                mySerial.print("http://maps.google.com/maps?q=");
+                mySerial.print(la);mySerial.print('.');mySerial.print(latt);mySerial.print(",");//Serial.println(latl);
+                mySerial.print(lo);mySerial.print('.');mySerial.println(lonn);//16.496390, 80.654752
+                Serial.print("http://maps.google.com/maps?q=");
+           Serial.print(la);Serial.print('.');Serial.print(latt);Serial.print(",");//Serial.println(latl);
+                  Serial.print(lo);Serial.print('.');Serial.println(lonn);//16.496390, 80.654752
+                delay(2000);
+                mySerial.println((char)26);// ASCII code of CTRL+Z
+                delay(1000);
+                digitalWrite(13,LOW);
+                }
+                else if(kl==5)
+                {
+                //=======================================SMS 2===================================//
+                mySerial.println("AT+CMGF=1");    //Sets the GSM Module in Text Mode
+                delay(2000);  // Delay of 1000 milli seconds or 1 second
+                //Serial.print("AT+CMGS=\"9502772667\"\r\n");// Replace x with mobile number
+                mySerial.print("AT+CMGS=\"7981922258\"\r\n");// Replace x with mobile number
+                delay(2000);
+                mySerial.println("Sound detected PLZ TAKE ALERT....!");
+                mySerial.print("http://maps.google.com/maps?q=");
+                mySerial.print(la);mySerial.print('.');mySerial.print(latt);mySerial.print(",");//Serial.println(latl);
+                mySerial.print(lo);mySerial.print('.');mySerial.println(lonn);//16.496390, 80.654752
+                Serial.print("http://maps.google.com/maps?q=");
+                Serial.print(la);Serial.print('.');Serial.print(latt);Serial.print(",");//Serial.println(latl);
+                  Serial.print(lo);Serial.print('.');Serial.println(lonn);//16.496390, 80.654752
+                delay(2000);
+                mySerial.println((char)26);// ASCII code of CTRL+Z
+                delay(1000);
+                digitalWrite(13,LOW);
+                }
+              }  
+            }  
+          }  
+        }  
+      }
+    }
+  }
+}  
